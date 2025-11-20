@@ -227,7 +227,13 @@ if __name__ == '__main__':
         exit()
 
     if pretrain_cls == True:
-        g_head.load_state_dict({k.replace('linear.', ''): v for k, v in torch.load("/home/zikaixiao/zikai/aapfl/pfed_lastest/demo.pth").items() if 'linear' in k})
+        # Load pretrained classifier weights from a local file
+        # Update this path to point to your pretrained model file
+        pretrained_path = "./pretrained/demo.pth"
+        if os.path.exists(pretrained_path):
+            g_head.load_state_dict({k.replace('linear.', ''): v for k, v in torch.load(pretrained_path).items() if 'linear' in k})
+        else:
+            print(f"Warning: Pretrained model not found at {pretrained_path}. Skipping pretrained weights loading.")
 
 
     g_aux = nn.Linear(in_features, out_features).to(args.device)

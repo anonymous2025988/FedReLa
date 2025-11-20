@@ -18,348 +18,9 @@ import matplotlib.pyplot as plt
 import pickle, os
 from util.FedReLa import relabel_local_data as fedrela_relabel_local_data
 
-def get_noise_index_refined(train_dataloader,g_head,net, net_id, args, thre = 3, class_num = 100, read = False, store = False, cm = 0, method = 'loge'):
-    np.set_printoptions(suppress=True, precision=4)
-    if not read and not store:
-        return None
-    if read:
-        if os.path.exists('./output/relabels/'+args.id+'_net_'+str(net_id)+'_'+'relabel_info.pkl'):
-            with open('./output/relabels/'+args.id+'_net_'+str(net_id)+'_'+'relabel_info.pkl','rb') as j:
-                relabel_info = pickle.load(j)
-            return relabel_info
-        else:
-            return None
-    #thre = 13
-    pre_dict = {}
-    loss_clean = {}
-    g_head.eval()
-    #net.eval()
-    for e in range(5):
-        for batch_idx, (index, x, target) in enumerate(train_dataloader):
-            index, x, target = index, x.cuda(args.gpu, non_blocking=True), target.cuda(args.gpu, non_blocking=True)
-            feat = net(x, latent_output=True)
-            out = g_head(feat)
-            if method == 'etf':
-                cur_M = g_head.ori_M
-                out = torch.matmul(out, cur_M)
-            pospre = F.softmax(out, dim=1).cpu().detach().numpy()
-            #print(pospre.shape, method)
-            target = target.long()
-            #loss = criterion(out, target)
-            for i, value in enumerate(x.cpu()):
-                if str(index[i]) in pre_dict:
-                    pre_dict[str(index[i])].append((pospre[i],target.cpu().detach().numpy()[i]))
-                else:
-                    pre_dict[str(index[i])] = [(pospre[i],target.cpu().detach().numpy()[i])]
-
-    targets = np.array([t[0][1] for t in pre_dict.values()])
-    for k,v in pre_dict.items():
-        pre_dict[k] = (np.mean(np.array([item[0] for item in v]),axis = 0), v[0][1])
-    preds = np.array([t[0] for t in pre_dict.values()])
-    classes = np.array(list(range(class_num)))
-    cls,cls_cnt = np.unique(targets, return_counts=True)
-    print(cls,cls_cnt)
-    priors = []
-    
-    for c in classes:
-        if c in cls:
-            priors.append(cls_cnt[np.where(cls == c)[0]][0])
-        else:
-            priors.append(0)
-    cls_cnt = priors
-    priors = np.array(priors)
-    priors = 1-  (priors - np.min(priors))/(np.max(priors)-np.min(priors))
-    preds_mean, preds_std = [],[]
-    preds_wrong = {}
-    comp = {}
-    for k in classes:
-        preds_wrong[k] = []
-        comp[k] = {}
-    classwise_mean = {}
-    classwise_std = {}
-    for k in classes:
-        classwise_mean[k] = []
-        classwise_std[k] = []
-        for j in classes:
-            classwise_mean[k].append(np.mean(preds[np.where(targets == k)[0],j]))
-            classwise_std[k].append(np.std(preds[np.where(targets == k)[0],j]))
-        np.set_printoptions(suppress=True, precision=4)
-        print(k, classwise_mean[k], classwise_std[k])
-        if len(preds[np.where(targets != k)[0],k]) > 1:
-            #print(preds[np.where(targets != k)[0],k])
-            preds_mean.append(np.mean(preds[np.where(targets != k)[0],k]))
-            preds_std.append(np.std(preds[np.where(targets != k)[0],k]))
-        else:
-            preds_mean.append(0)
-            preds_std.append(-1)
-    print(preds_mean,preds_std)
-    zscores = {}
-    fliprate = {}
-    relabelcnt = 0
-    relabel_flag = {}
-    
-    label_cnt = {key: 0 for key in range(len(classes))}
-    zscore_m = []
-    for key,value in pre_dict.items():
-        (pred_prob, c) = value
-        pred_prob[c] = 0
-        zscores[key] = (pred_prob - np.array(classwise_mean[c])) / np.array(classwise_std[c])
-        #zscores[key] = (pred_prob - np.array(preds_mean)) / np.array(preds_std)
-        prior_weight = np.array([max(p-priors[c],0) for p in priors])
-        zscore_m.append(zscores[key])
-    zscore_m = np.array(zscore_m)
-    
-    if 1:
-        m = np.array([int(thre/100*sum(cls_cnt)) for p in cls_cnt])
-        print('m',m)
-        ##m = np.array([100,50,150,250,200,300,200,400,500,500])
-        ##m = np.array([thre,thre,thre,thre,thre,thre,thre,thre,thre,thre])
-        k = zscore_m.shape[0] - 1 - m  # 因为 partition 是按升序的，需转换
-        #print('k', k)
-        partitioned = np.partition(zscore_m, k, axis=0)
-        threclass = partitioned[k, np.arange(zscore_m.shape[1])]
-        print('threclass with thre ',str(thre),'%:', threclass)
-        if net_id == -1:
-            plt.figure(figsize=(12, 6))
-            inputarry = np.sort(zscore_m, axis=0)[::-1]
-            print(inputarry[int(thre),:])
-            # 为每一列绘制曲线
-            for col in range(inputarry.shape[1]):
-                if col in [0,1,2,3,4,5]:
-                    plt.plot(inputarry[:, col], 
-                            label=f'Line {col+1}',
-                            alpha=0.8,
-                            linewidth=1.5)
-
-            # 添加图表元素
-            plt.title('Multi-Line Plot', fontsize=14)
-            plt.xlabel('Index', fontsize=12)
-            plt.ylabel('Value', fontsize=12)
-            plt.grid(True, linestyle='--', alpha=0.7)
-
-            # 优化图例显示
-            plt.legend(bbox_to_anchor=(1.05, 1), 
-                    loc='upper left',
-                    borderaxespad=0.,
-                    fontsize=10,
-                    ncol=2)
-
-            # 自动调整布局并显示
-            plt.tight_layout()
-            plt.show()
-    else:
-        threclass = thre
-    #threclass[3:7] = 100
-    #threclass = np.partition(zscore_m, -thre, axis=0)[-thre]
-    #threclass = thre
-
-    ccnt = 0
-    
-    for key,value in pre_dict.items():
-        (pred_prob, c) = value
-        prior_weight = np.array([max(p-priors[c],0) for p in priors])
-        if args.id == 'nozscoreh':
-            fliprate[key] = pred_prob*prior_weight#*preds_wrong[c]#*preds_wrong[c]
-        else:
-            fliprate[key] = np.tanh((zscores[key]-threclass))*prior_weight#*preds_wrong[c]#*preds_wrong[c]
-        #if c in [0,1,2] and ccnt < 20:
-        #    ccnt = ccnt +1
-            #print('class', c, key)
-            #print('pred', pred_prob)
-            #print('flip', fliprate[key])
-            #print('zscore', zscores[key])
-            #print('prior', prior_weight)
-        uniform_rand = np.random.rand(len(classes))
-        relabel_candidates = np.where(fliprate[key] > uniform_rand)[0]
-        if len(relabel_candidates):
-            compare_flip = fliprate[key][relabel_candidates]
-            highest_flip = np.where(compare_flip == max(compare_flip))[0]
-            relabel_idx = relabel_candidates[highest_flip]
-            relabelcnt += len(relabel_idx)
-            relabel_flag[key] = classes[relabel_idx]
-            label_cnt[classes[relabel_idx][0]] += 1
-            if classes[relabel_idx][0] not in comp[c]:
-                comp[c][classes[relabel_idx][0]] = 1
-            else:
-                comp[c][classes[relabel_idx][0]] += 1
-            #print(net_id,c,fliprate[key],compare_flip,highest_flip,relabel_idx,relabel_flag[key],key)
-        else:
-            label_cnt[c] += 1
-
-    #print(comp)
-    relabel_info={}
-    relabel_info['relabel_flag'] = relabel_flag
-
-    if store:
-        os.makedirs('./output/relabels/', exist_ok=True)
-        with open('./output/relabels/'+args.id+'_net_'+str(net_id)+'_'+'relabel_info.pkl', 'wb') as file:
-            pickle.dump(relabel_info, file)
-    print(net_id, relabelcnt, comp, label_cnt)
-    return relabel_info
-
-def get_noise_index_refined1(train_dataloader,g_head,net, net_id, args, thre = 3, class_num = 100, read = False, store = False, cm = 0, method = 'loge'):
-    if not read and not store:
-        return None
-    if read:
-        if os.path.exists('./output/relabels/'+args.id+'_net_'+str(net_id)+'_'+'relabel_info.pkl'):
-            with open('./output/relabels/'+args.id+'_net_'+str(net_id)+'_'+'relabel_info.pkl','rb') as j:
-                relabel_info = pickle.load(j)
-            return relabel_info
-        else:
-            return None
-
-    pre_dict = {}
-    loss_clean = {}
-    g_head.eval()
-    net.eval()
-    for e in range(5):
-        for batch_idx, (index, x, target) in enumerate(train_dataloader):
-            index, x, target = index, x.cuda(args.gpu, non_blocking=True), target.cuda(args.gpu, non_blocking=True)
-            feat = net(x, latent_output=True)
-            out = g_head(feat)
-            if method == 'etf':
-                cur_M = g_head.ori_M
-                out = torch.matmul(out, cur_M)
-            pospre = F.softmax(out, dim=1).cpu().detach().numpy()
-            #print(pospre.shape, method)
-            target = target.long()
-            #loss = criterion(out, target)
-            for i, value in enumerate(x.cpu()):
-                if str(index[i]) in pre_dict:
-                    pre_dict[str(index[i])].append((pospre[i],target.cpu().detach().numpy()[i]))
-                else:
-                    pre_dict[str(index[i])] = [(pospre[i],target.cpu().detach().numpy()[i])]
-
-    targets = np.array([t[0][1] for t in pre_dict.values()])
-    for k,v in pre_dict.items():
-        pre_dict[k] = (np.mean(np.array([item[0] for item in v]),axis = 0), v[0][1])
-    preds = np.array([t[0] for t in pre_dict.values()])
-    classes = np.array(list(range(class_num)))
-    cls,cls_cnt = np.unique(targets, return_counts=True)
-    print(cls,cls_cnt)
-    priors = []
-    
-    for c in classes:
-        if c in cls:
-            priors.append(cls_cnt[np.where(cls == c)[0]][0])
-        else:
-            priors.append(0)
-    cls_cnt = priors
-    priors = np.array(priors)
-    priors = 1-  (priors - np.min(priors))/(np.max(priors)-np.min(priors))
-    preds_mean, preds_std = [],[]
-    preds_wrong = {}
-    comp = {}
-    for k in classes:
-        preds_wrong[k] = []
-        comp[k] = {}
-    for k in classes:
-        if len(preds[np.where(targets != k)[0],k]) > 1:
-            #print(preds[np.where(targets != k)[0],k])
-            preds_mean.append(np.mean(preds[np.where(targets != k)[0],k]))
-            preds_std.append(np.std(preds[np.where(targets != k)[0],k]))
-            for j in classes:
-                if j == k:
-                    preds_wrong[k].append(0)
-                else:
-                    wrong = np.mean(preds[np.where(targets == j)[0],k])
-                    preds_wrong[k].append(wrong)
-        else:
-            preds_mean.append(0)
-            preds_std.append(-1)
-    print(preds_mean,preds_std)
-    zscores = {}
-    fliprate = {}
-    relabelcnt = 0
-    relabel_flag = {}
-    
-    label_cnt = {key: 0 for key in range(len(classes))}
-    zscore_m = []
-    for key,value in pre_dict.items():
-        (pred_prob, c) = value
-        zscores[key] = (pred_prob - np.array(preds_mean)) / np.array(preds_std)
-        prior_weight = np.array([max(p-priors[c],0) for p in priors])
-        zscore_m.append(zscores[key])
-    zscore_m = np.array(zscore_m)
-    
-    if 1:
-        m = np.array([int(thre/100*sum(cls_cnt)) for p in cls_cnt])
-        print('m',m)
-        ##m = np.array([100,50,150,250,200,300,200,400,500,500])
-        ##m = np.array([thre,thre,thre,thre,thre,thre,thre,thre,thre,thre])
-        k = zscore_m.shape[0] - 1 - m  # 因为 partition 是按升序的，需转换
-        #print('k', k)
-        partitioned = np.partition(zscore_m, k, axis=0)
-        threclass = partitioned[k, np.arange(zscore_m.shape[1])]
-        print('threclass with thre ',str(thre),'%:', threclass)
-        if net_id == -1:
-            plt.figure(figsize=(12, 6))
-            inputarry = np.sort(zscore_m, axis=0)[::-1]
-            print(inputarry[int(thre),:])
-            # 为每一列绘制曲线
-            for col in range(inputarry.shape[1]):
-                plt.plot(inputarry[:, col], 
-                        label=f'Line {col+1}',
-                        alpha=0.8,
-                        linewidth=1.5)
-
-            # 添加图表元素
-            plt.title('Multi-Line Plot', fontsize=14)
-            plt.xlabel('Index', fontsize=12)
-            plt.ylabel('Value', fontsize=12)
-            plt.grid(True, linestyle='--', alpha=0.7)
-
-            # 优化图例显示
-            plt.legend(bbox_to_anchor=(1.05, 1), 
-                    loc='upper left',
-                    borderaxespad=0.,
-                    fontsize=10,
-                    ncol=2)
-
-            # 自动调整布局并显示
-            plt.tight_layout()
-            plt.show()
-    else:
-        threclass = thre
-    #threclass[3:7] = 100
-    #threclass = np.partition(zscore_m, -thre, axis=0)[-thre]
-    #threclass = thre
-
-        
-    for key,value in pre_dict.items():
-        (pred_prob, c) = value
-        prior_weight = np.array([max(p-priors[c],0) for p in priors])
-        fliprate[key] = np.tanh((zscores[key]-threclass))*prior_weight#*preds_wrong[c]#*preds_wrong[c]
-        uniform_rand = np.random.rand(len(classes))
-        relabel_candidates = np.where(fliprate[key] > uniform_rand)[0]
-        if len(relabel_candidates):
-            compare_flip = fliprate[key][relabel_candidates]
-            highest_flip = np.where(compare_flip == max(compare_flip))[0]
-            relabel_idx = relabel_candidates[highest_flip]
-            relabelcnt += len(relabel_idx)
-            relabel_flag[key] = classes[relabel_idx]
-            label_cnt[classes[relabel_idx][0]] += 1
-            if classes[relabel_idx][0] not in comp[c]:
-                comp[c][classes[relabel_idx][0]] = 1
-            else:
-                comp[c][classes[relabel_idx][0]] += 1
-            #print(net_id,c,fliprate[key],compare_flip,highest_flip,relabel_idx,relabel_flag[key],key)
-        else:
-            label_cnt[c] += 1
-
-    #print(comp)
-    relabel_info={}
-    relabel_info['relabel_flag'] = relabel_flag
-
-    if store:
-        os.makedirs('./output/relabels/', exist_ok=True)
-        with open('./output/relabels/'+args.id+'_net_'+str(net_id)+'_'+'relabel_info.pkl', 'wb') as file:
-            pickle.dump(relabel_info, file)
-    print(net_id, relabelcnt, comp, label_cnt)
-    return relabel_info
 
 
-# 通过cient的id来划分local longtail的数据
+# Split local longtail data by client id
 class DatasetSplit(Dataset):
     def __init__(self, dataset, idxs):
         self.dataset = dataset
@@ -559,7 +220,7 @@ class LocalUpdate(object):
         return net.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
     def update_weights_backbone_only(self, net, seed, epoch, criterion=None, mu=1, lr=None):
-        # 再固定head，训练表征
+        # Fix head again, train representation
         count = 0
         for p in net.parameters():
             if count >= 108:        # 108
@@ -583,17 +244,17 @@ class LocalUpdate(object):
 
         epoch_loss = []
 
-        # 假设 model 是你的模型
+        # Assume model is your model
         linear_weights = net.linear.weight
 
 
-        # 创建一个掩码，原始权重为0的位置为1，其他为0
+        # Create a mask where positions with original weight 0 are 1, others are 0
         # spar_mask = (linear_weights == 0).float()
 
-        # 开放尾部的authority
-        # 创建一个全0的掩码
+        # Enable tail authority
+        # Create an all-zero mask
         spar_mask = torch.zeros_like(linear_weights)
-        # 对权重矩阵的后75行，原始权重为0的位置为1，其他为0
+        # For the last 75 rows of the weight matrix, positions with original weight 0 are 1, others are 0
         # spar_mask[-75:] = (linear_weights[-75:] == 0).float()   
         spar_mask[:25] = (linear_weights[:25] == 0).float()   
 
@@ -612,7 +273,7 @@ class LocalUpdate(object):
                 loss.backward()
 
 
-                # 在优化步骤之前，应用掩码
+                # Apply mask before optimization step
                 net.linear.weight.grad *= spar_mask
                 # Assume you have a model 'model'
 
@@ -642,7 +303,7 @@ class LocalUpdate(object):
 
         epoch_loss = []
 
-        # 先训练head，固定表征
+        # First train head, fix representation
         count = 0
         for p in net.parameters():
             if count >= 108:        # 108
@@ -657,7 +318,7 @@ class LocalUpdate(object):
 
         for iter in range(15):
             if iter == 10:
-                # 再固定head，训练表征
+                # Fix head again, train representation
                 count = 0
                 for p in net.parameters():
                     if count >= 108:        # 108
@@ -706,14 +367,14 @@ class LocalUpdate(object):
         optimizer_g_backbone = torch.optim.SGD(list(net.parameters()), lr=self.args.lr, momentum=self.args.momentum)
         optimizer_g_aux = torch.optim.SGD(g_aux.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         # optimizer_g_aux = torch.optim.SGD([
-        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': g_aux.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': g_aux.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_l_head = torch.optim.SGD(l_head.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # 定义优化器
+        # Define optimizer
         # optimizer_l_head = torch.optim.SGD([
-        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': l_head.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': l_head.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
 
         criterion_l = nn.CrossEntropyLoss()
@@ -728,13 +389,13 @@ class LocalUpdate(object):
             return loss_diff + loss_same
 
         def normalized_feature_loss(features):
-            # 计算特征向量的范数
+            # Calculate the norm of feature vectors
             norms = torch.norm(features, dim=1)
-            # 计算范数的均值
+            # Calculate the mean of norms
             mean_norm = torch.mean(norms)
-            # 计算范数与均值的差的平方，然后求和以得到方差
+            # Calculate the square of the difference between norms and mean, then sum to get variance
             variance = torch.mean((norms - mean_norm) ** 2)
-            # 返回范数的方差
+            # Return the variance of norms
             return variance
 
         def get_mma_loss(features, labels):
@@ -874,14 +535,14 @@ class LocalUpdate(object):
         optimizer_g_backbone = torch.optim.SGD(list(net.parameters()), lr=self.args.lr, momentum=self.args.momentum)
         optimizer_g_aux = torch.optim.SGD(g_aux.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         # optimizer_g_aux = torch.optim.SGD([
-        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': g_aux.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': g_aux.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_l_head = torch.optim.SGD(l_head.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # 定义优化器
+        # Define optimizer
         # optimizer_l_head = torch.optim.SGD([
-        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': l_head.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': l_head.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
 
         criterion_l = nn.CrossEntropyLoss()
@@ -893,7 +554,7 @@ class LocalUpdate(object):
                 global_mean = torch.stack(valid_class_means).mean(dim=0)
             del valid_class_means
             # output: global_mean
-            # 归一化之后的
+            # After normalization
             class_means = {class_idx: (class_mean - global_mean) if class_mean is not None else None for class_idx, class_mean in class_means.items()}
             features = features - global_mean
 
@@ -911,11 +572,11 @@ class LocalUpdate(object):
             class_means = {class_idx: (class_mean - global_mean) if class_mean is not None else None for class_idx, class_mean in class_means.items()}
             features = features - global_mean
 
-            # 1.统计有哪些label 2.看这些label的class mean距离哪个class mean比较大 3.计算features与这个class mean的相似度，最小化这个相似度
-            # 仅选择不为None的class_means
+            # 1. Count which labels exist 2. Check which class mean these labels' class means are far from 3. Calculate similarity between features and this class mean, minimize this similarity
+            # Only select class_means that are not None
             filtered_class_means = {k: v for k, v in class_means.items() if v is not None}
             all_class_means = torch.stack(list(filtered_class_means.values()))
-            # 初始化用于存储每个feature与其"最相似的class mean"相似度的张量
+            # Initialize tensor to store similarity between each feature and its "most similar class mean"
             max_similarities = torch.zeros(len(features), device=features.device)
 
 
@@ -923,45 +584,45 @@ class LocalUpdate(object):
                 current_label = labels[i].item()
                 current_class_mean = class_means[current_label]
 
-                # 找出除当前class_mean外的所有其他class_mean的索引
+                # Find indices of all other class_means except the current class_mean
                 other_class_mean_indices = [idx for idx, k in enumerate(filtered_class_means.keys()) if k != current_label]
 
-                # 计算当前class_mean与所有其他class_means的相似度
+                # Calculate similarity between current class_mean and all other class_means
                 similarities = F.cosine_similarity(current_class_mean.unsqueeze(0), all_class_means[other_class_mean_indices], dim=1)
 
-                # 找到最相似的class_mean的相似度和索引
+                # Find the similarity and index of the most similar class_mean
                 max_similarity, max_id = similarities.max(dim=0)
 
-                # 使用原始索引来找出最相似的class_mean
+                # Use original index to find the most similar class_mean
                 most_similar_class_mean = all_class_means[other_class_mean_indices[max_id]]
                 
-                # 计算该feature与这个最相似的class_mean的相似度
+                # Calculate similarity between this feature and the most similar class_mean
                 feature_similarity = F.cosine_similarity(features[i].unsqueeze(0), most_similar_class_mean.unsqueeze(0), dim=1)
 
-                # 存储相似度
+                # Store similarity
                 max_similarities[i] = feature_similarity
 
-            # 最终的损失是所有max_similarities的和
+            # Final loss is the sum of all max_similarities
             total_loss = max_similarities.sum()
             return total_loss
 
 
 
         def inter_max_feat_classmean(features, labels, class_means):
-            # 初始化用于存储每个feature与其"最相似的class mean"相似度的张量
+            # Initialize tensor to store similarity between each feature and its "most similar class mean"
             max_similarities = torch.zeros(len(features), device=features.device)
 
-            # 预处理：去除None值，计算global_mean
+            # Preprocessing: remove None values, calculate global_mean
             valid_class_means = [class_mean for class_mean in class_means.values() if class_mean is not None]
             if valid_class_means:
                 global_mean = torch.stack(valid_class_means).mean(dim=0)
             del valid_class_means
 
-            # 去全局均值化
+            # Remove global mean
             features = features - global_mean
             class_means = {class_idx: (class_mean - global_mean) if class_mean is not None else None for class_idx, class_mean in class_means.items()}
 
-            # 仅选择不为None的class_means
+            # Only select class_means that are not None
             filtered_class_means = {k: v for k, v in class_means.items() if v is not None}
             all_class_means = torch.stack(list(filtered_class_means.values()))
 
@@ -971,7 +632,7 @@ class LocalUpdate(object):
                 # 找出除当前class_mean外的所有其他class_mean的索引
                 other_class_mean_indices = [idx for idx, k in enumerate(filtered_class_means.keys()) if k != current_label]
 
-                # 直接使用features与所有其他的class_means来计算相似度
+                # Directly use features to calculate similarity with all other class_means
                 similarities = F.cosine_similarity(features[i].unsqueeze(0), all_class_means[other_class_mean_indices], dim=1)
 
                 # 找到最相似的class_mean的相似度和索引
@@ -1015,7 +676,7 @@ class LocalUpdate(object):
             criterion_l = focus_loss(num_classes=100)
 
         epoch_loss = []
-        momentum = 0.9  # 可以根据实际情况调整
+        momentum = 0.9  # Can be adjusted according to actual situation
         for iter in range(epoch):
             batch_loss = []
             # use/load data from split training set "ldr_train"
@@ -1032,7 +693,7 @@ class LocalUpdate(object):
                 # backbone
                 features = net(images, latent_output=True)
                 
-                # 更新 class means 使用指数移动平均
+                # Update class means using exponential moving average
                 for i in range(len(features)):
                     class_idx = labels[i].item()
 
@@ -1090,14 +751,14 @@ class LocalUpdate(object):
                                 {"params": g_head.parameters()}], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_g_aux = torch.optim.SGD(g_aux.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         # optimizer_g_aux = torch.optim.SGD([
-        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': g_aux.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': g_aux.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_l_head = torch.optim.SGD(l_head.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # 定义优化器
+        # Define optimizer
         # optimizer_l_head = torch.optim.SGD([
-        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': l_head.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': l_head.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
 
 
@@ -1135,7 +796,7 @@ class LocalUpdate(object):
                 # net.zero_grad()1
 
 
-                # 更新ori_M(ETF权重)
+                # Update ori_M (ETF weights)
                 learned_norm = produce_Ew(labels, num_classes)
                 cur_M = learned_norm * g_head.ori_M
 
@@ -1180,14 +841,14 @@ class LocalUpdate(object):
         optimizer_g_backbone = torch.optim.SGD(list(net.parameters()) + [g_head.weights], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_g_aux = torch.optim.SGD(g_aux.parameters(), lr=self.args.lr, momentum=self.args.momentum)
         # optimizer_g_aux = torch.optim.SGD([
-        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': g_aux.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': g_aux.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_l_head = torch.optim.SGD(l_head.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # 定义优化器
+        # Define optimizer
         # optimizer_l_head = torch.optim.SGD([
-        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': l_head.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': l_head.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
 
         criterion_l = nn.CrossEntropyLoss()
@@ -1242,14 +903,14 @@ class LocalUpdate(object):
         # optimizer_g_backbone = torch.optim.SGD(list(net.parameters()), lr=self.args.lr, momentum=self.args.momentum)
         optimizer_g_aux = torch.optim.SGD(list(net.parameters()) + list(g_aux.parameters()), lr=self.args.lr, momentum=self.args.momentum)
         # optimizer_g_aux = torch.optim.SGD([
-        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': g_aux.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': g_aux.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': g_aux.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
         optimizer_l_head = torch.optim.SGD(l_head.parameters(), lr=self.args.lr, momentum=self.args.momentum)
-        # 定义优化器
+        # Define optimizer
         # optimizer_l_head = torch.optim.SGD([
-        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # 对权重使用weight_decay
-        #                     {'params': l_head.bias, 'weight_decay': 0}  # 对偏置不使用weight_decay
+        #                     {'params': l_head.weight, 'weight_decay': 1e-1},  # Use weight_decay for weights
+        #                     {'params': l_head.bias, 'weight_decay': 0}  # Do not use weight_decay for bias
         #                 ], lr=self.args.lr, momentum=self.args.momentum)
 
         criterion_l = nn.CrossEntropyLoss()
@@ -1310,20 +971,20 @@ class LocalUpdate(object):
                 optimizer_l.zero_grad()
                 optimizer_g_aux.zero_grad()
 
-                # backbone更新
+                # Update backbone
                 features = net(images, latent_output=True)
                 output_g = g_head(features)
                 loss_g = criterion_g(output_g, labels)
                 loss_g.backward()
                 optimizer_g.step()
 
-                # aux更新
+                # Update aux
                 output_g_aux = g_aux(features.detach())
                 loss_g_aux = criterion_g(output_g_aux, labels)
                 loss_g_aux.backward()
                 optimizer_g_aux.step()
 
-                # p cls更新
+                # Update p cls
                 output_l = l_head(features.detach())
                 loss_l = criterion_l(output_l, labels)
                 loss_l.backward()
@@ -1360,20 +1021,20 @@ class LocalUpdate(object):
                 optimizer_l.zero_grad()
                 optimizer_g_aux.zero_grad()
 
-                # backbone更新
+                # Update backbone
                 features = net(images, latent_output=True)
                 # output_g = g_head(features)
                 # loss_g = criterion_g(output_g, labels)
                 # loss_g.backward()
                 # optimizer_g.step()
 
-                # aux更新
+                # Update aux
                 # output_g_aux = g_aux(features.detach())
                 # loss_g_aux = criterion_g(output_g_aux, labels)
                 # loss_g_aux.backward()
                 # optimizer_g_aux.step()
 
-                # p cls更新
+                # Update p cls
                 output_l = l_head(features.detach())
                 loss_l = criterion_l(output_l, labels)
                 loss_l.backward()
@@ -1415,20 +1076,20 @@ class LocalUpdate(object):
                 optimizer_g_aux.zero_grad()
                 # optimizer.zero_grad()
 
-                # backbone更新
+                # Update backbone
                 features = net(images, latent_output=True)
                 # output_g = g_head(features)
                 # loss_g = criterion_g(output_g, labels)
                 # loss_g.backward()
                 # optimizer_g.step()
 
-                # aux更新
+                # Update aux
                 # output_g_aux = g_aux(features.detach())
                 # loss_g_aux = criterion_g(output_g_aux, labels)
                 # loss_g_aux.backward()
                 # optimizer_g_aux.step()
 
-                # 迁移学习
+                # Transfer learning
                 outputs_g_aux = g_aux(features.detach())
                 outputs_l_head = l_head(features.detach())
                 
@@ -1444,7 +1105,7 @@ class LocalUpdate(object):
                 optimizer_g_aux.step()
 
 
-                # p cls更新
+                # Update p cls
                 # output_l = l_head(features.detach())
                 # loss_l = criterion_l(output_l, labels)
                 # loss_l.backward()
@@ -1466,9 +1127,9 @@ class LocalUpdate(object):
         # Initialize relabel_info as empty dict since relabeling is not used in this function
         relabel_info = {'relabel_flag': {}}
 
-        # 权重norm初始化
+        # Initialize weight norm
         norm = torch.norm(l_head.weight, p=2, dim=1)
-        # 将g_head.weight转换为torch.nn.Parameter类型
+        # Convert g_head.weight to torch.nn.Parameter type
         g_aux.weight = nn.Parameter(g_aux.weight * norm.unsqueeze(1))
 
 
@@ -1507,20 +1168,20 @@ class LocalUpdate(object):
                 optimizer_g_aux.zero_grad()
                 # optimizer.zero_grad()
 
-                # backbone更新
+                # Update backbone
                 features = net(images, latent_output=True)
                 # output_g = g_head(features)
                 # loss_g = criterion_g(output_g, labels)
                 # loss_g.backward()
                 # optimizer_g.step()
 
-                # aux更新
+                # Update aux
                 # output_g_aux = g_aux(features.detach())
                 # loss_g_aux = criterion_g(output_g_aux, labels)
                 # loss_g_aux.backward()
                 # optimizer_g_aux.step()
 
-                # 迁移学习
+                # Transfer learning
                 outputs_g_aux = g_aux(features.detach())
                 # outputs_l_head = l_head(features.detach())
                 
@@ -1537,7 +1198,7 @@ class LocalUpdate(object):
                 
 
 
-                # p cls更新
+                # Update p cls
                 # output_l = l_head(features.detach())
                 # loss_l = criterion_l(output_l, labels)
                 # loss_l.backward()
@@ -1586,7 +1247,7 @@ class LocalUpdate(object):
             # print(label_debug)
         return net.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
-    # 专为获取梯度信息设计的local update函数
+    # Local update function designed specifically for obtaining gradient information
     def update_weights_gasp_grad(self, net, seed, net_glob, client_id, epoch, gradBag, mu=1, lr=None):
         hookObj,  gradAnalysor = gradBag.get_client(client_id)
         net_glob = net_glob
@@ -1613,7 +1274,7 @@ class LocalUpdate(object):
                 criterion = self.get_loss()
                 loss = criterion(logits, labels)
                 hook_handle = logits.register_hook(
-                    hookObj.hook_func_tensor)  # hook抓取梯度
+                    hookObj.hook_func_tensor)  # Hook captures gradient
                 if self.args.beta > 0:
                     if batch_idx > 0:
                         w_diff = torch.tensor(0.).to(self.args.device)
@@ -1624,7 +1285,7 @@ class LocalUpdate(object):
                 loss.backward()
 
                 if hookObj.has_gradient():
-                    # 输入一个batch的梯度和label
+                    # Input gradients and labels for a batch
                     gradAnalysor.update(
                         hookObj.get_gradient(), labels.cpu().numpy().tolist())
                 optimizer.step()
@@ -1635,7 +1296,7 @@ class LocalUpdate(object):
             epoch_loss.append(sum(batch_loss)/len(batch_loss))
         gradBag.load_in(client_id, hookObj, gradAnalysor)
         return net.state_dict(), sum(epoch_loss) / len(epoch_loss), gradBag
-# 用pid算法进行local update
+# Perform local update using PID algorithm
 
     def update_weights_GBA_Loss(self, net, seed, epoch, pidloss, mu=1, lr=None):
         
@@ -1672,7 +1333,7 @@ class LocalUpdate(object):
 
 
     def update_weights_GBA_Finetune(self, net, seed, epoch, pidloss, mu=1, lr=None):
-        # 冻结一部分层
+        # Freeze some layers
         count = 0
         for p in net.parameters():
             if count >= 105:        # 108
@@ -1712,7 +1373,7 @@ class LocalUpdate(object):
             epoch_loss.append(sum(batch_loss)/len(batch_loss))
         return net.state_dict(), sum(epoch_loss) / len(epoch_loss)
 
-    # 用pid算法进行local update
+    # Perform local update using PID algorithm
     def update_weights_GBA_Layer(self, net, seed, epoch, GBA_Loss, GBA_Layer, mu=1, lr=None):
 
         net.train()
@@ -1760,7 +1421,7 @@ def globaltest_villina(net, test_dataset, args, dataset_class=None):
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
 
     # global_test_distribution = global_test_distribution + 100*[0]
@@ -1795,14 +1456,14 @@ def globaltest_villina(net, test_dataset, args, dataset_class=None):
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     acc_class_wise = [predict_true_class[i] / (total_class_label[i] + 1e-10) for i in range(args.num_classes)]
     # print(acc_class_wise)
@@ -1825,7 +1486,7 @@ def globaltest(net, g_head, test_dataset, args, dataset_class=None, head_switch=
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
     with torch.no_grad():
@@ -1858,14 +1519,14 @@ def globaltest(net, g_head, test_dataset, args, dataset_class=None, head_switch=
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     acc_class_wise = [predict_true_class[i] / total_class_label[i] for i in range(args.num_classes)]
     acc = correct / total
@@ -1886,7 +1547,7 @@ def globaltest_head(net, g_head, test_dataset, args, dataset_class=None, head_sw
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
     with torch.no_grad():
@@ -1920,14 +1581,14 @@ def globaltest_head(net, g_head, test_dataset, args, dataset_class=None, head_sw
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     acc_class_wise = [predict_true_class[i] / total_class_label[i] for i in range(args.num_classes)]
     acc = correct / total
@@ -2007,14 +1668,14 @@ def localtest_head(net, g_head, l_head, test_dataset, dataset_class, idxs, user_
             for i in range(len(predicted)):
                 if predicted[i] == labels[i]:
                     correct_classwise[labels[i].cpu().tolist()] += 1 
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
 
 
@@ -2060,29 +1721,29 @@ def globaltest_calibra(net, g_aux, test_dataset, args, dataset_class=None, head_
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
     cali_alpha = torch.norm(g_aux.weight, dim=1)
 
     import time
     start_time = time.time()
-    # 矫正feats
-    # 计算 cali_alpha 的倒数
+    # Calibrate features
+    # Calculate the reciprocal of cali_alpha
     cali_alpha = torch.pow(cali_alpha, 1)
     print(cali_alpha)
     print(ji, cali_alpha**ji)
     inverse_cali_alpha = 1.7 / cali_alpha**ji
-    # 将 inverse_cali_alpha 扩展为 (100, 1) 的形状
+    # Expand inverse_cali_alpha to shape (100, 1)
     inverse_cali_alpha = inverse_cali_alpha.view(-1, 1)
     
 
-    # 矫正cls
+    # Calibrate classifier
     g_aux.weight = torch.nn.Parameter(g_aux.weight * inverse_cali_alpha)
     end_time = time.time()
 
-    # 计算并打印运行时间
-    print("运行时间：", end_time - start_time, "秒")
+    # Calculate and print running time
+    print("Running time:", end_time - start_time, "seconds")
     with torch.no_grad():
         correct = 0
         total = 0
@@ -2090,18 +1751,18 @@ def globaltest_calibra(net, g_aux, test_dataset, args, dataset_class=None, head_
             images = images.to(args.device)
             labels = labels.to(args.device)
             features = net(images, latent_output=True)
-            # 利用广播机制，将 features 的每个元素乘以 inverse_cali_alpha
+            # Use broadcasting mechanism to multiply each element of features by inverse_cali_alpha
             # features = features * inverse_cali_alpha
             if head_switch == True:
                 outputs = g_aux(features)
                 # outputs = features.matmul(g_head.weight.t()) + g_head.bias
-                # 计算 features 的 Frobenius 范数
+                # Calculate Frobenius norm of features
                 # features_norm = torch.norm(features, dim=1, keepdim=True)
 
-                # # 计算 g_head.weight 的 Frobenius 范数
+                # # Calculate Frobenius norm of g_head.weight
                 # weight_norm = torch.norm(g_head.weight, dim=1, keepdim=True)
 
-                # # 计算两个范数的乘积，并转置得到 [100, 100] 的输出
+                # # Calculate product of two norms and transpose to get [100, 100] output
                 # outputs = (features_norm * weight_norm.t()).squeeze()
             else:
                 outputs = features
@@ -2124,14 +1785,14 @@ def globaltest_calibra(net, g_aux, test_dataset, args, dataset_class=None, head_
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     acc_class_wise = [predict_true_class[i] / total_class_label[i] for i in range(args.num_classes)]
     acc = correct / total
@@ -2152,11 +1813,11 @@ def globaltest_classmean(net, g_head, test_dataset, args, dataset_class=None, he
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
 
-    # 初始化一个字典来存储每个类别的总和和计数
+    # Initialize a dictionary to store sum and count for each class
     class_sums = {}
     class_counts = {}
     # features_list = []
@@ -2177,14 +1838,14 @@ def globaltest_classmean(net, g_head, test_dataset, args, dataset_class=None, he
             correct += (predicted == labels).sum().item()
 
             #####################
-            # 计算class mean
-                # 遍历每个样本
+            # Calculate class mean
+                # Iterate through each sample
             for i in range(images.size(0)):
-                # 获取样本的类别和特征值
+                # Get sample's class and feature values
                 label = labels[i].item()
                 feature = features[i]
 
-                # 更新类别的总和和计数
+                # Update sum and count for the class
                 if label not in class_sums:
                     class_sums[label] = feature
                     class_counts[label] = 1
@@ -2208,17 +1869,17 @@ def globaltest_classmean(net, g_head, test_dataset, args, dataset_class=None, he
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     
-    # 计算每个类别的平均值
+    # Calculate the average value for each class
     class_means = {label: class_sum / class_counts[label] for label, class_sum in class_sums.items()}
     class_norms = {label: torch.norm(mean, p=2) for label, mean in class_means.items()}
     acc_class_wise = [predict_true_class[i] / total_class_label[i] for i in range(args.num_classes)]
@@ -2231,17 +1892,17 @@ def globaltest_classmean(net, g_head, test_dataset, args, dataset_class=None, he
         from sklearn.manifold import TSNE
         from sklearn.preprocessing import StandardScaler
 
-        # 提取class_means字典中的特征并转换为NumPy数组
+        # Extract features from class_means dictionary and convert to NumPy array
         features = np.array([value.cpu().numpy() for value in class_means.values()])
 
-        # 标准化特征
+        # Standardize features
         features = StandardScaler().fit_transform(features)
 
-        # 使用t-SNE进行降维
+        # Use t-SNE for dimensionality reduction
         tsne = TSNE(n_components=2, random_state=42, learning_rate=200)
         features_2d = tsne.fit_transform(features)
 
-        # 可视化
+        # Visualization
         plt.figure(figsize=(10, 8))
 
         for i, class_label in enumerate(class_means.keys()):
@@ -2364,11 +2025,11 @@ def globaltest_feat_collapse(net, g_head, test_dataset, args, dataset_class=None
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
 
-    # 初始化一个字典来存储每个类别的总和和计数
+    # Initialize a dictionary to store sum and count for each class
     class_sums = {}
     class_counts = {}
     # features_list = []
@@ -2389,14 +2050,14 @@ def globaltest_feat_collapse(net, g_head, test_dataset, args, dataset_class=None
             correct += (predicted == labels).sum().item()
 
             #####################
-            # 计算class mean
-                # 遍历每个样本
+            # Calculate class mean
+                # Iterate through each sample
             for i in range(images.size(0)):
-                # 获取样本的类别和特征值
+                # Get sample's class and feature values
                 label = labels[i].item()
                 feature = features[i]
 
-                # 更新类别的总和和计数
+                # Update sum and count for the class
                 if label not in class_sums:
                     class_sums[label] = feature
                     class_counts[label] = 1
@@ -2420,14 +2081,14 @@ def globaltest_feat_collapse(net, g_head, test_dataset, args, dataset_class=None
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     acc = correct / total
     acc_3shot_global["head"] = correct_3shot["head"] / \
@@ -2439,7 +2100,7 @@ def globaltest_feat_collapse(net, g_head, test_dataset, args, dataset_class=None
     print("默认inference性能:")
     print(acc, acc_3shot_global)
     
-    # 计算每个类别的平均值
+    # Calculate the average value for each class
     class_means = {label: class_sum / class_counts[label] for label, class_sum in class_sums.items()}
 
     # T-SNE
@@ -2499,14 +2160,14 @@ def globaltest_feat_collapse(net, g_head, test_dataset, args, dataset_class=None
             correct += (predicted == labels).sum().item()
 
             #####################
-            # 计算class mean
-                # 遍历每个样本
+            # Calculate class mean
+                # Iterate through each sample
             for i in range(images.size(0)):
-                # 获取样本的类别和特征值
+                # Get sample's class and feature values
                 label = labels[i].item()
                 feature = features[i]
 
-                # 更新类别的总和和计数
+                # Update sum and count for the class
                 if label not in class_sums:
                     class_sums[label] = feature
                     class_counts[label] = 1
@@ -2530,14 +2191,14 @@ def globaltest_feat_collapse(net, g_head, test_dataset, args, dataset_class=None
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
 
     acc = correct / total
     acc_3shot_global["head"] = correct_3shot["head"] / \
@@ -2841,7 +2502,7 @@ def globaltest_class_mean_filter(net, g_head, test_dataset, class_means, args, d
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
 
@@ -2912,14 +2573,14 @@ def globaltest_class_mean_filter(net, g_head, test_dataset, class_means, args, d
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
 
     acc = correct / total
     acc_3shot_global["head"] = correct_3shot["head"] / \
@@ -2947,7 +2608,7 @@ def globaltest_etf(net, g_head, test_dataset, args, dataset_class=None, head_swi
     net.eval()
     test_loader = torch.utils.data.DataLoader(
         dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     total_class_label = [0 for i in range(args.num_classes)]
     predict_true_class = [0 for i in range(args.num_classes)]
     cur_M = g_head.ori_M
@@ -2982,14 +2643,14 @@ def globaltest_etf(net, g_head, test_dataset, args, dataset_class=None, head_swi
                 else:
                     total_3shot["tail"] += 1
             for i in range(len(predicted)):
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
     acc_class_wise = [predict_true_class[i] / total_class_label[i] for i in range(args.num_classes)]
     acc = correct / total
@@ -3012,7 +2673,7 @@ def globaltest_GBA_Layer(backbone, classifier, test_dataset, args, dataset_class
     backbone.eval()
     classifier.eval()
     test_loader = torch.utils.data.DataLoader(dataset=test_dataset, batch_size=100, shuffle=False)
-    # 监视真实情况下所有样本的类别分布
+    # Monitor the class distribution of all samples in real scenario
     distri_class_real = [0 for i in range(100)]
     with torch.no_grad():
         correct = 0
@@ -3028,7 +2689,7 @@ def globaltest_GBA_Layer(backbone, classifier, test_dataset, args, dataset_class
 
             # start: cal 3shot metrics
             for label in labels:
-                distri_class_real[int(label)] += 1      # 监视真实情况下所有样本的类别分布
+                distri_class_real[int(label)] += 1      # Monitor the class distribution of all samples in real scenario
                 if label in three_shot_dict["head"]:
                     total_3shot["head"] += 1
                 elif label in three_shot_dict["middle"]:
@@ -3119,14 +2780,14 @@ def localtest_villina(net, test_dataset, dataset_class, idxs, user_id):
             for i in range(len(predicted)):
                 if predicted[i] == labels[i]:
                     correct_classwise[labels[i].cpu().tolist()] += 1 
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
 
 
@@ -3279,14 +2940,14 @@ def localtest(net, g_head, l_head, test_dataset, dataset_class, idxs, user_id):
             for i in range(len(predicted)):
                 if predicted[i] == labels[i]:
                     correct_classwise[labels[i].cpu().tolist()] += 1 
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
 
 
@@ -3442,14 +3103,14 @@ def localtest_etf(net, g_head, l_head, test_dataset, dataset_class, idxs, user_i
             for i in range(len(predicted)):
                 if predicted[i] == labels[i]:
                     correct_classwise[labels[i].cpu().tolist()] += 1 
-                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # 预测正确且在head中
+                if predicted[i] == labels[i] and labels[i] in three_shot_dict["head"]:   # Correctly predicted and in head
                     correct_3shot["head"] += 1
-                # 预测正确且在middle中
+                # Correctly predicted and in middle
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["middle"]:
                     correct_3shot["middle"] += 1
-                # 预测正确且在tail中
+                # Correctly predicted and in tail
                 elif predicted[i] == labels[i] and labels[i] in three_shot_dict["tail"]:
-                    correct_3shot["tail"] += 1      # 在tail中
+                    correct_3shot["tail"] += 1      # In tail
             # end
 
 

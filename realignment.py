@@ -120,7 +120,7 @@ if __name__ == '__main__':
             l_heads.append(torch.load(load_dir +  args.id +"l_head_" + str(i) + "best.pth").to(args.device))
 
     # norm = torch.norm(g_aux.weight, p=2, dim=1)
-    # # 将g_head.weight转换为torch.nn.Parameter类型
+    # # Convert g_head.weight to torch.nn.Parameter type
     # g_aux.weight = nn.Parameter(g_aux.weight / norm.unsqueeze(1))
     # g_head.weight = nn.Parameter(torch.ones_like(g_head.weight))
 
@@ -144,7 +144,7 @@ if __name__ == '__main__':
     # global tuning
 
     # global test
-    # 将g_head除以norm
+    # Divide g_head by norm
     # g_head.weight = g_head.weight / norm.unsqueeze(1)
     # acc_s2, global_3shot_acc = globaltest_feat_collapse(copy.deepcopy(model).to(args.device), g_head = copy.deepcopy(g_head).to(args.device), test_dataset = dataset_test, args = args, dataset_class = datasetObj)
     if args.relabeltest:
@@ -160,70 +160,71 @@ if __name__ == '__main__':
 
 
 
-        # local test 
-        acc_list = []
-        f1_macro_list = []
-        f1_weighted_list = []
-        acc_3shot_local_list = []
-        for i in range(args.num_users):
-            # model.load_state_dict(copy.deepcopy(w_locals[i]))
-            # print('copy sucess')
-            acc_local, f1_macro, f1_weighted, acc_3shot_local = localtest(copy.deepcopy(model).to(args.device), copy.deepcopy(g_auxs_intervaria[i]).to(args.device), copy.deepcopy(l_heads[i]).to(args.device), dataset_test, dataset_class = datasetObj, idxs=dict_localtest[i], user_id = i)
-            # print('local test success')
-            acc_list.append(acc_local)
-            f1_macro_list.append(f1_macro)
-            f1_weighted_list.append(f1_weighted)
-            acc_3shot_local_list.append(acc_3shot_local) 
+        # Local performance evaluation is disabled
+        # # local test 
+        # acc_list = []
+        # f1_macro_list = []
+        # f1_weighted_list = []
+        # acc_3shot_local_list = []
+        # for i in range(args.num_users):
+        #     # model.load_state_dict(copy.deepcopy(w_locals[i]))
+        #     # print('copy sucess')
+        #     acc_local, f1_macro, f1_weighted, acc_3shot_local = localtest(copy.deepcopy(model).to(args.device), copy.deepcopy(g_auxs_intervaria[i]).to(args.device), copy.deepcopy(l_heads[i]).to(args.device), dataset_test, dataset_class = datasetObj, idxs=dict_localtest[i], user_id = i)
+        #     # print('local test success')
+        #     acc_list.append(acc_local)
+        #     f1_macro_list.append(f1_macro)
+        #     f1_weighted_list.append(f1_weighted)
+        #     acc_3shot_local_list.append(acc_3shot_local) 
 
-        # start:calculate acc_3shot_local
-        avg3shot_acc={"head":0, "middle":0, "tail":0}
-        divisor = {"head":0, "middle":0, "tail":0}
-        for i in range(len(acc_3shot_local_list)):
-            avg3shot_acc["head"] += acc_3shot_local_list[i]["head"][0]
-            avg3shot_acc["middle"] += acc_3shot_local_list[i]["middle"][0]
-            avg3shot_acc["tail"] += acc_3shot_local_list[i]["tail"][0]
-            divisor["head"] += acc_3shot_local_list[i]["head"][1]
-            divisor["middle"] += acc_3shot_local_list[i]["middle"][1]
-            divisor["tail"] += acc_3shot_local_list[i]["tail"][1]
-        avg3shot_acc["head"] /= divisor["head"]
-        avg3shot_acc["middle"] /= divisor["middle"]
-        avg3shot_acc["tail"] /= divisor["tail"]
-        # end 
+        # # start:calculate acc_3shot_local
+        # avg3shot_acc={"head":0, "middle":0, "tail":0}
+        # divisor = {"head":0, "middle":0, "tail":0}
+        # for i in range(len(acc_3shot_local_list)):
+        #     avg3shot_acc["head"] += acc_3shot_local_list[i]["head"][0]
+        #     avg3shot_acc["middle"] += acc_3shot_local_list[i]["middle"][0]
+        #     avg3shot_acc["tail"] += acc_3shot_local_list[i]["tail"][0]
+        #     divisor["head"] += acc_3shot_local_list[i]["head"][1]
+        #     divisor["middle"] += acc_3shot_local_list[i]["middle"][1]
+        #     divisor["tail"] += acc_3shot_local_list[i]["tail"][1]
+        # avg3shot_acc["head"] /= divisor["head"]
+        # avg3shot_acc["middle"] /= divisor["middle"]
+        # avg3shot_acc["tail"] /= divisor["tail"]
+        # # end 
         
-        # start: calculate 3shot of each client
-        # # three_shot_client = [{"head":0, "middle":0, "tail":0} for i in range(len(acc_3shot_local_list))]
-        for i in range(len(acc_3shot_local_list)):
-            acclist = []
-            if acc_3shot_local_list[i]["head"][1] == True:
-                acclist.append(acc_3shot_local_list[i]["head"][0])
-            else:
-                acclist.append(0)
+        # # start: calculate 3shot of each client
+        # # # three_shot_client = [{"head":0, "middle":0, "tail":0} for i in range(len(acc_3shot_local_list))]
+        # for i in range(len(acc_3shot_local_list)):
+        #     acclist = []
+        #     if acc_3shot_local_list[i]["head"][1] == True:
+        #         acclist.append(acc_3shot_local_list[i]["head"][0])
+        #     else:
+        #         acclist.append(0)
 
-            if acc_3shot_local_list[i]["middle"][1] == True:
-                acclist.append(acc_3shot_local_list[i]["middle"][0])
-            else:
-                acclist.append(0)
+        #     if acc_3shot_local_list[i]["middle"][1] == True:
+        #         acclist.append(acc_3shot_local_list[i]["middle"][0])
+        #     else:
+        #         acclist.append(0)
                 
-            if acc_3shot_local_list[i]["tail"][1] == True:
-                acclist.append(acc_3shot_local_list[i]["tail"][0])
-            else:
-                acclist.append(0)
-            #print("3shot of client {}:head:{}, middle:{}, tail{}".format(i, acclist[0], acclist[1], acclist[2]))
-        # end
+        #     if acc_3shot_local_list[i]["tail"][1] == True:
+        #         acclist.append(acc_3shot_local_list[i]["tail"][0])
+        #     else:
+        #         acclist.append(0)
+        #     #print("3shot of client {}:head:{}, middle:{}, tail{}".format(i, acclist[0], acclist[1], acclist[2]))
+        # # end
 
-        avg_local_acc = sum(acc_list)/len(acc_list)
-        # print('Calculate the local average acc')
+        # avg_local_acc = sum(acc_list)/len(acc_list)
+        # # print('Calculate the local average acc')
 
-        idxs_users = np.random.choice(range(args.num_users), m, replace=False, p=prob)
-        dict_len = [len(dict_users[idx]) for idx in idxs_users]
-        avg_f1_macro = Weighted_avg_f1(f1_macro_list,dict_len=dict_len)
-        avg_f1_weighted = Weighted_avg_f1(f1_weighted_list,dict_len)
+        # idxs_users = np.random.choice(range(args.num_users), m, replace=False, p=prob)
+        # dict_len = [len(dict_users[idx]) for idx in idxs_users]
+        # avg_f1_macro = Weighted_avg_f1(f1_macro_list,dict_len=dict_len)
+        # avg_f1_weighted = Weighted_avg_f1(f1_weighted_list,dict_len)
 
         rnd = 0
-        print('round %d, local average test acc  %.4f \n'%(rnd, avg_local_acc))
-        print('round %d, local macro average F1 score  %.4f \n'%(rnd, avg_f1_macro))
-        print('round %d, local weighted average F1 score  %.4f \n'%(rnd, avg_f1_weighted))
-        print('round %d, average 3shot acc: [head: %.4f, middle: %.4f, tail: %.4f] \n'%(rnd, avg3shot_acc["head"], avg3shot_acc["middle"], avg3shot_acc["tail"]))
+        # print('round %d, local average test acc  %.4f \n'%(rnd, avg_local_acc))
+        # print('round %d, local macro average F1 score  %.4f \n'%(rnd, avg_f1_macro))
+        # print('round %d, local weighted average F1 score  %.4f \n'%(rnd, avg_f1_weighted))
+        # print('round %d, average 3shot acc: [head: %.4f, middle: %.4f, tail: %.4f] \n'%(rnd, avg3shot_acc["head"], avg3shot_acc["middle"], avg3shot_acc["tail"]))
         
         print('round %d, global 3shot acc: [head: %.4f, middle: %.4f, tail: %.4f] \n'%(rnd, global_3shot_acc["head"], global_3shot_acc["middle"], global_3shot_acc["tail"]))
         print(args.id + 'round %d, global test acc  %.4f \n'%(rnd, acc_s2))
